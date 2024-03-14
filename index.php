@@ -36,10 +36,10 @@ function getQueryTransacao(string $tipo): string {
 
 	return (
 		"WITH cliente_atualizado AS ($query) " .
-		"INSERT INTO transacao (cliente_id, valor, tipo, descricao, limite_atual, saldo_atual) " .
-			"SELECT ?, ?, ?, ?, cliente_atualizado.limite, cliente_atualizado.saldo " .
+		"INSERT INTO transacao (cliente_id, valor, tipo, descricao) " .
+			"SELECT ?, ?, ?, ? " .
 			"FROM cliente_atualizado " .
-			"RETURNING limite_atual, saldo_atual"
+			"RETURNING (SELECT CONCAT(limite, '|', saldo) FROM cliente WHERE id = cliente_id) AS limite_saldo "
 	);
 }
 
@@ -88,9 +88,11 @@ function handleTransacao(int $clienteId) {
 		respondAndDie(422);
 	}
 
+	$limiteSaldo = explode("|", $result[0]["limite_saldo"]);
+
 	$response = [
-		"saldo" => $result[0]["saldo_atual"],
-		"limite" => $result[0]["limite_atual"],
+		"saldo" => $limiteSaldo[1],
+		"limite" => $limiteSaldo[0],
 	];
 
 	respondAndDie(200, $response);
@@ -102,11 +104,12 @@ function handleExtrato(int $clienteId) {
 	}
 
 	$query = (
-		"SELECT valor, tipo, descricao, realizada_em, limite_atual, saldo_atual " .
-		"FROM transacao " .
-		"WHERE cliente_id = ? " .
-		"ORDER BY id DESC " .
-		"LIMIT 11 " // Deve pegar uma a mais para ignorar a inicial depois, se necessário
+		"SELECT t.valor, t.tipo, t.descricao, t.realizada_em, c.limite, c.saldo " .
+		"FROM cliente c " .
+		"LEFT JOIN transacao t ON c.id = t.cliente_id " .
+		"WHERE c.id = ? " .
+		"ORDER BY t.id DESC " .
+		"LIMIT 10 "
 	);
 
 	$conn = getConnection();
@@ -114,32 +117,29 @@ function handleExtrato(int $clienteId) {
 	$stmt->execute([$clienteId]);
 	$result = $stmt->fetchAll();
 
-	if (empty($result)) {
+	if ($result === false) {
 		respondAndDie(422);
 	}
 
-	$limiteAtual = $result[0]["limite_atual"];
-	$saldoAtual = $result[0]["saldo_atual"];
-
-	// Sempre remove a última transação
-	// Se tem 11 transações, remove e fica com 10 (nenhuma sendo a inicial)
-	// Se tem menos, remove a última, que será sempre o saldo inicial
-	array_pop($result);
+	$limite = $result[0]["limite"];
+	$saldo = $result[0]["saldo"];
 
 	$ultimasTransacoes = [];
 	foreach ($result as $row) {
-		$ultimasTransacoes[] = [
-			"valor" => $row["valor"],
-			"tipo" => $row["tipo"],
-			"descricao" => $row["descricao"],
-			"realizada_em" => $row["realizada_em"],
-		];
+		if ($row["valor"] !== null) {
+			$ultimasTransacoes[] = [
+				"valor" => $row["valor"],
+				"tipo" => $row["tipo"],
+				"descricao" => $row["descricao"],
+				"realizada_em" => $row["realizada_em"],
+			];
+		}
 	}
 
 	$response = [
 		"saldo" => [
-			"total" => $saldoAtual,
-			"limite" => $limiteAtual,
+			"total" => $saldo,
+			"limite" => $limite,
 			"data_extrato" => date("Y-m-d H:i:s"), // verificar essa data
 		],
 		"ultimas_transacoes" => $ultimasTransacoes,
